@@ -91,6 +91,27 @@ export default function App() {
     return Math.round(total + 1.2);
   }, [parsedSegments, speed, repetitionCount, pauseBetweenWords, pauseBetweenReps]);
 
+  // Rileva se il testo digitato appartiene a un alfabeto diverso dalla lingua impostata
+  const detectedMismatch = useMemo(() => {
+    if (!inputText.trim()) return null;
+    if (/[\u4e00-\u9fa5]/.test(inputText) && !selectedLangCode.startsWith('zh')) {
+      return { code: 'zh-CN', label: 'Cinese Mandarino 🇨🇳' };
+    }
+    if (/[\u3040-\u30ff]/.test(inputText) && selectedLangCode !== 'ja') {
+      return { code: 'ja', label: 'Giapponese 🇯🇵' };
+    }
+    if (/[\uac00-\ud7af]/.test(inputText) && selectedLangCode !== 'ko') {
+      return { code: 'ko', label: 'Coreano 🇰🇷' };
+    }
+    if (/[\u0400-\u04ff]/.test(inputText) && !['ru', 'uk', 'bg', 'sr'].includes(selectedLangCode)) {
+      return { code: 'ru', label: 'Russo 🇷🇺' };
+    }
+    if (/[\u0600-\u06ff]/.test(inputText) && selectedLangCode !== 'ar') {
+      return { code: 'ar', label: 'Arabo 🇸🇦' };
+    }
+    return null;
+  }, [inputText, selectedLangCode]);
+
   // Test rapido pronuncia di una parola
   const handleQuickListen = async (word: string) => {
     try {
@@ -104,7 +125,21 @@ export default function App() {
       source.start();
       source.onended = () => setPreviewingWord(null);
     } catch (err) {
-      console.error(err);
+      console.warn('TTS fetch preview failed, trying Web Speech fallback:', err);
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(word);
+          utterance.lang = selectedLangCode;
+          utterance.rate = speed;
+          utterance.onend = () => setPreviewingWord(null);
+          utterance.onerror = () => setPreviewingWord(null);
+          window.speechSynthesis.speak(utterance);
+          return;
+        } catch {
+          // ignore
+        }
+      }
       setPreviewingWord(null);
     }
   };
@@ -378,6 +413,24 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {detectedMismatch && (
+              <div className="flex items-center justify-between p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 animate-fadeIn">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    Hai inserito caratteri di <strong>{detectedMismatch.label}</strong> mentre la lingua è {currentLang.name}.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedLangCode(detectedMismatch.code)}
+                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-xs transition-colors shrink-0 cursor-pointer"
+                >
+                  Imposta {detectedMismatch.label}
+                </button>
+              </div>
+            )}
 
             <textarea
               rows={4}

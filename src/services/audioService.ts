@@ -60,9 +60,33 @@ export async function fetchTtsAudioBuffer(
   const googleSpeed = speed <= 0.8 ? '0.3' : '1.0';
   const url = `/api/tts?q=${encodeURIComponent(trimmed)}&tl=${encodeURIComponent(lang)}&ttsspeed=${googleSpeed}`;
 
-  const response = await fetch(url);
+  let response: Response;
+  try {
+    response = await fetch(url);
+    if (!response.ok) {
+      // Retry once after brief pause if server was warming up
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      response = await fetch(url);
+    }
+  } catch (err: any) {
+    // Retry once on network blip
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    response = await fetch(url);
+  }
+
   if (!response.ok) {
-    throw new Error(`Impossibile ottenere l'audio per "${trimmed}": ${response.statusText}`);
+    let errorDetail = response.statusText;
+    try {
+      const errJson = await response.json();
+      if (errJson?.error) {
+        errorDetail = errJson.details ? `${errJson.error} (${errJson.details})` : errJson.error;
+      }
+    } catch {
+      // ignore JSON parse fail
+    }
+    throw new Error(
+      `Impossibile ottenere l'audio per "${trimmed}" (errore ${response.status}${errorDetail ? ': ' + errorDetail : ''}). Controlla la lingua selezionata o riprova.`
+    );
   }
 
   const arrayBuffer = await response.arrayBuffer();
