@@ -1,0 +1,6 @@
+{
+  "name": "Dettato Audio MP3",
+  "description": "Generatore di file audio MP3 per dettati con voci Google e Android, velocità lenta regolabile e ripetizioni multiple.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
