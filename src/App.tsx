@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Volume2,
   FileAudio,
@@ -15,6 +15,7 @@ import {
   Play,
   RotateCcw,
   Sparkles,
+  CheckCircle,
 } from 'lucide-react';
 import { AudioPlayerCard } from './components/AudioPlayerCard';
 import {
@@ -25,11 +26,13 @@ import {
 } from './services/audioService';
 import { parseTextIntoSegments, SegmentationMode } from './utils/textParser';
 import { LANGUAGES, LanguageOption } from './constants/languages';
+import { detectLanguageFromText, GREETINGS_SAMPLE } from './utils/languageDetector';
 
 export default function App() {
   // Lingua selezionata (default: Italiano)
   const [selectedLangCode, setSelectedLangCode] = useState<string>('it');
   const [categoryFilter, setCategoryFilter] = useState<'tutte' | 'occidentali' | 'slave' | 'orientali'>('tutte');
+  const [detectedLangName, setDetectedLangName] = useState<string | null>(null);
 
   // Modalità di divisione del testo
   const [segmentMode, setSegmentMode] = useState<SegmentationMode>('commas');
@@ -57,15 +60,32 @@ export default function App() {
   const [totalDuration, setTotalDuration] = useState(0);
   const [timings, setTimings] = useState<SegmentTiming[]>([]);
 
-  // Preview singola parola
+  // Preview vocale
   const [previewingWord, setPreviewingWord] = useState<string | null>(null);
+  const [isPlayingVoiceSample, setIsPlayingVoiceSample] = useState(false);
 
   // Lingua corrente
   const currentLang = useMemo(() => {
     return LANGUAGES.find((l) => l.code === selectedLangCode) || LANGUAGES[0];
   }, [selectedLangCode]);
 
-  // Filtra lingue
+  // Rilevamento automatico della lingua quando l'utente scrive o incolla testo
+  const lastDetectedLangRef = useRef<string | null>(null);
+  useEffect(() => {
+    const detected = detectLanguageFromText(inputText);
+    if (detected && detected !== selectedLangCode && detected !== lastDetectedLangRef.current) {
+      lastDetectedLangRef.current = detected;
+      const targetLang = LANGUAGES.find((l) => l.code === detected);
+      if (targetLang) {
+        setSelectedLangCode(detected);
+        setCategoryFilter(targetLang.category);
+        setDetectedLangName(`${targetLang.flag} ${targetLang.name}`);
+        setMp3Blob(null);
+      }
+    }
+  }, [inputText, selectedLangCode]);
+
+  // Filtra lingue in base alla categoria
   const filteredLanguages = useMemo(() => {
     if (categoryFilter === 'tutte') return LANGUAGES;
     return LANGUAGES.filter((l) => l.category === categoryFilter);
@@ -91,28 +111,50 @@ export default function App() {
     return Math.round(total + 1.2);
   }, [parsedSegments, speed, repetitionCount, pauseBetweenWords, pauseBetweenReps]);
 
-  // Rileva se il testo digitato appartiene a un alfabeto diverso dalla lingua impostata
-  const detectedMismatch = useMemo(() => {
-    if (!inputText.trim()) return null;
-    if (/[\u4e00-\u9fa5]/.test(inputText) && !selectedLangCode.startsWith('zh')) {
-      return { code: 'zh-CN', label: 'Cinese Mandarino 🇨🇳' };
+  // Cambio lingua senza cancellare il testo dell'utente!
+  const handleSelectLanguage = (code: string) => {
+    setSelectedLangCode(code);
+    setDetectedLangName(null);
+    setMp3Blob(null);
+    const target = LANGUAGES.find((l) => l.code === code);
+    if (target) {
+      setCategoryFilter(target.category);
     }
-    if (/[\u3040-\u30ff]/.test(inputText) && selectedLangCode !== 'ja') {
-      return { code: 'ja', label: 'Giapponese 🇯🇵' };
-    }
-    if (/[\uac00-\ud7af]/.test(inputText) && selectedLangCode !== 'ko') {
-      return { code: 'ko', label: 'Coreano 🇰🇷' };
-    }
-    if (/[\u0400-\u04ff]/.test(inputText) && !['ru', 'uk', 'bg', 'sr'].includes(selectedLangCode)) {
-      return { code: 'ru', label: 'Russo 🇷🇺' };
-    }
-    if (/[\u0600-\u06ff]/.test(inputText) && selectedLangCode !== 'ar') {
-      return { code: 'ar', label: 'Arabo 🇸🇦' };
-    }
-    return null;
-  }, [inputText, selectedLangCode]);
+  };
 
-  // Test rapido pronuncia di una parola
+  // Quando l'utente clicca una categoria, seleziona la lingua principale di quella categoria
+  const handleCategoryClick = (cat: 'tutte' | 'occidentali' | 'slave' | 'orientali') => {
+    setCategoryFilter(cat);
+    if (cat === 'occidentali' && currentLang.category !== 'occidentali') {
+      setSelectedLangCode('it');
+    } else if (cat === 'slave' && currentLang.category !== 'slave') {
+      setSelectedLangCode('ru');
+    } else if (cat === 'orientali' && currentLang.category !== 'orientali') {
+      setSelectedLangCode('zh-CN');
+    }
+    setMp3Blob(null);
+  };
+
+  // Ascolto di prova della voce della lingua selezionata
+  const handleTestVoiceSample = async () => {
+    try {
+      setIsPlayingVoiceSample(true);
+      const sampleText = GREETINGS_SAMPLE[selectedLangCode] || `Test voce ${currentLang.name}`;
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const buffer = await fetchTtsAudioBuffer(sampleText, selectedLangCode, speed);
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.start();
+      source.onended = () => setIsPlayingVoiceSample(false);
+    } catch (err: any) {
+      console.error(err);
+      setIsPlayingVoiceSample(false);
+      setErrorMessage(`Errore test voce ${currentLang.name}: ${err?.message || err}`);
+    }
+  };
+
+  // Test rapido pronuncia di una parola del dettato
   const handleQuickListen = async (word: string) => {
     try {
       setPreviewingWord(word);
@@ -120,57 +162,13 @@ export default function App() {
       const buffer = await fetchTtsAudioBuffer(word, selectedLangCode, speed);
       const source = audioCtx.createBufferSource();
       source.buffer = buffer;
-      source.playbackRate.value = speed <= 0.8 ? speed / 0.75 : speed;
       source.connect(audioCtx.destination);
       source.start();
       source.onended = () => setPreviewingWord(null);
-    } catch (err) {
-      console.warn('TTS fetch preview failed, trying Web Speech fallback:', err);
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(word);
-          utterance.lang = selectedLangCode;
-          utterance.rate = speed;
-          utterance.onend = () => setPreviewingWord(null);
-          utterance.onerror = () => setPreviewingWord(null);
-          window.speechSynthesis.speak(utterance);
-          return;
-        } catch {
-          // ignore
-        }
-      }
+    } catch (err: any) {
+      console.error(err);
       setPreviewingWord(null);
-    }
-  };
-
-  // Esempio rapido quando si cambia lingua
-  const handleLangChange = (newCode: string) => {
-    setSelectedLangCode(newCode);
-    setMp3Blob(null);
-
-    // Esempi opzionali per testare subito la pronuncia nelle varie lingue
-    if (newCode === 'ru') {
-      setInputText('яблоко, собака, кошка, солнце, книга, школа');
-      setFileName('diktant_russkij');
-    } else if (newCode === 'pl') {
-      setInputText('jabłko, słońce, szkoła, kot, pies, książka');
-      setFileName('dyktando_polski');
-    } else if (newCode === 'zh-CN') {
-      setInputText('苹果，小猫，太阳，学校，朋友，老师');
-      setFileName('tingxie_zhongwen');
-    } else if (newCode === 'ja') {
-      setInputText('りんご、ねこ、たいよう、がっこう、ともだち');
-      setFileName('kakitori_nihongo');
-    } else if (newCode === 'ar') {
-      setInputText('شمس, كتاب, مدرسة, صديق, قلم, تفاحة');
-      setFileName('imlaa_arabi');
-    } else if (newCode === 'en' || newCode === 'en-US') {
-      setInputText('apple, dog, cat, sunshine, school, friend');
-      setFileName('dictation_english');
-    } else if (newCode === 'it') {
-      setInputText('palla, stella, cassetto, cappello, gatto, penna');
-      setFileName('dettato_italiano');
+      setErrorMessage(`Impossibile ascoltare "${word}" con voce ${currentLang.name}.`);
     }
   };
 
@@ -185,12 +183,12 @@ export default function App() {
       setIsGenerating(true);
       setErrorMessage(null);
       setGenerationProgress(10);
-      setGenerationStatus(`Connessione alle voci Google & Android in ${currentLang.name}...`);
+      setGenerationStatus(`Generazione con voce Google & Android [${currentLang.name}]...`);
 
       const result = await renderDictationAudio(
         {
           segments: parsedSegments,
-          lang: selectedLangCode,
+          lang: selectedLangCode, // Lingua corretta applicata!
           speed,
           repetitionCount,
           pauseBetweenRepetitions: pauseBetweenReps,
@@ -222,7 +220,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-stone-100 text-stone-900 font-sans pb-16">
-      {/* Header pulito e compatto */}
+      {/* Header minimale */}
       <header className="bg-white border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -233,7 +231,9 @@ export default function App() {
               <h1 className="text-base font-bold text-stone-900 leading-tight">
                 Generatore Dettati Audio MP3
               </h1>
-              <p className="text-xs text-stone-500">Voci Google & Android • Occidentali, Slave e Orientali</p>
+              <p className="text-xs text-stone-500">
+                Voci Google & Android • Occidentali, Slave e Orientali
+              </p>
             </div>
           </div>
           <span className="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
@@ -242,99 +242,127 @@ export default function App() {
         </div>
       </header>
 
-      {/* Scheda Principale in 4 Passaggi */}
+      {/* Contenitore principale */}
       <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
         <div className="bg-white rounded-2xl border border-stone-200 p-6 shadow-xs space-y-6">
 
-          {/* PASSO 1: SCELTA DELLA LINGUA (Occidentali, Slave, Orientali) */}
+          {/* PASSO 1: SELEZIONE DELLA VOCE E DELLA LINGUA */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="text-sm font-bold text-stone-900 flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-amber-600 text-white text-xs flex items-center justify-center font-bold">
                   1
                 </span>
-                <span>Scegli la lingua del dettato:</span>
+                <span>Voce e Lingua della lettura:</span>
               </label>
-              <span className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                {currentLang.flag} {currentLang.name}
-              </span>
+
+              {/* Tasto per ascoltare la voce attiva */}
+              <button
+                type="button"
+                onClick={handleTestVoiceSample}
+                disabled={isPlayingVoiceSample}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer"
+                title={`Ascolta una frase di prova pronunciata dalla voce Google in ${currentLang.name}`}
+              >
+                {isPlayingVoiceSample ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                    <span>Riproduzione in corso...</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Ascolta voce {currentLang.flag} {currentLang.name}</span>
+                  </>
+                )}
+              </button>
             </div>
 
-            {/* Categorie filtri */}
+            {/* Badge rilevamento lingua automatica se applicata */}
+            {detectedLangName && (
+              <div className="flex items-center gap-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg animate-fade-in">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  <strong>Lingua rilevata automaticamente dal testo:</strong> {detectedLangName}. La voce Google è stata impostata su questa lingua.
+                </span>
+              </div>
+            )}
+
+            {/* Categorie: Tutte, Occidentali, Slave, Orientali */}
             <div className="flex flex-wrap gap-1.5 text-xs">
               <button
                 type="button"
-                onClick={() => setCategoryFilter('tutte')}
-                className={`px-3 py-1 rounded-lg border font-medium transition-colors ${
+                onClick={() => handleCategoryClick('tutte')}
+                className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${
                   categoryFilter === 'tutte'
                     ? 'border-stone-900 bg-stone-900 text-white'
                     : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
                 }`}
               >
-                Tutte le lingue ({LANGUAGES.length})
+                Tutte ({LANGUAGES.length})
               </button>
               <button
                 type="button"
-                onClick={() => setCategoryFilter('occidentali')}
-                className={`px-3 py-1 rounded-lg border font-medium transition-colors ${
+                onClick={() => handleCategoryClick('occidentali')}
+                className={`px-3 py-1.5 rounded-lg border font-semibold transition-colors ${
                   categoryFilter === 'occidentali'
-                    ? 'border-amber-600 bg-amber-600 text-white'
-                    : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
+                    ? 'border-amber-600 bg-amber-600 text-white shadow-xs'
+                    : 'border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
                 }`}
               >
-                🌍 Occidentali
+                🌍 Occidentali (Italiano, Inglese, Spagnolo...)
               </button>
               <button
                 type="button"
-                onClick={() => setCategoryFilter('slave')}
-                className={`px-3 py-1 rounded-lg border font-medium transition-colors ${
+                onClick={() => handleCategoryClick('slave')}
+                className={`px-3 py-1.5 rounded-lg border font-semibold transition-colors ${
                   categoryFilter === 'slave'
-                    ? 'border-amber-600 bg-amber-600 text-white'
-                    : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
+                    ? 'border-amber-600 bg-amber-600 text-white shadow-xs'
+                    : 'border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
                 }`}
               >
-                🏛️ Slave (Russo, Polacco, Ucraino...)
+                🏛️ Slave (Russo, Polacco, Ucraino, Ceco...)
               </button>
               <button
                 type="button"
-                onClick={() => setCategoryFilter('orientali')}
-                className={`px-3 py-1 rounded-lg border font-medium transition-colors ${
+                onClick={() => handleCategoryClick('orientali')}
+                className={`px-3 py-1.5 rounded-lg border font-semibold transition-colors ${
                   categoryFilter === 'orientali'
-                    ? 'border-amber-600 bg-amber-600 text-white'
-                    : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
+                    ? 'border-amber-600 bg-amber-600 text-white shadow-xs'
+                    : 'border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
                 }`}
               >
-                🌏 Orientali (Cinese, Giapponese, Arabo...)
+                🌏 Orientali (Cinese, Giapponese, Arabo, Coreano...)
               </button>
             </div>
 
-            {/* Menu a tendina completo con gruppi */}
+            {/* Menu a tendina completo */}
             <div className="relative">
               <select
                 value={selectedLangCode}
-                onChange={(e) => handleLangChange(e.target.value)}
-                className="w-full rounded-xl border border-stone-300 p-2.5 text-sm bg-white text-stone-800 font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 cursor-pointer"
+                onChange={(e) => handleSelectLanguage(e.target.value)}
+                className="w-full rounded-xl border border-stone-300 p-3 text-sm bg-white text-stone-900 font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-600 cursor-pointer shadow-2xs"
               >
                 {categoryFilter === 'tutte' ? (
                   <>
-                    <optgroup label="🌍 Lingue Occidentali">
+                    <optgroup label="🌍 LINGUE OCCIDENTALI">
                       {LANGUAGES.filter((l) => l.category === 'occidentali').map((l) => (
                         <option key={l.code} value={l.code}>
-                          {l.flag} {l.name} ({l.nativeName})
+                          {l.flag} {l.name} — ({l.nativeName})
                         </option>
                       ))}
                     </optgroup>
-                    <optgroup label="🏛️ Lingue Slave">
+                    <optgroup label="🏛️ LINGUE SLAVE">
                       {LANGUAGES.filter((l) => l.category === 'slave').map((l) => (
                         <option key={l.code} value={l.code}>
-                          {l.flag} {l.name} ({l.nativeName})
+                          {l.flag} {l.name} — ({l.nativeName})
                         </option>
                       ))}
                     </optgroup>
-                    <optgroup label="🌏 Lingue Orientali & Mediorientali">
+                    <optgroup label="🌏 LINGUE ORIENTALI & MEDIORIENTALI">
                       {LANGUAGES.filter((l) => l.category === 'orientali').map((l) => (
                         <option key={l.code} value={l.code}>
-                          {l.flag} {l.name} ({l.nativeName})
+                          {l.flag} {l.name} — ({l.nativeName})
                         </option>
                       ))}
                     </optgroup>
@@ -342,25 +370,55 @@ export default function App() {
                 ) : (
                   filteredLanguages.map((l) => (
                     <option key={l.code} value={l.code}>
-                      {l.flag} {l.name} ({l.nativeName})
+                      {l.flag} {l.name} — ({l.nativeName})
                     </option>
                   ))
                 )}
               </select>
             </div>
+
+            {/* Pulsanti rapidi per le lingue più comuni */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+              <span className="text-stone-400 text-[11px] mr-1">Accesso rapido:</span>
+              {[
+                { code: 'it', label: '🇮🇹 Italiano' },
+                { code: 'en', label: '🇬🇧 Inglese' },
+                { code: 'es', label: '🇪🇸 Spagnolo' },
+                { code: 'fr', label: '🇫🇷 Francese' },
+                { code: 'de', label: '🇩🇪 Tedesco' },
+                { code: 'ru', label: '🇷🇺 Russo' },
+                { code: 'pl', label: '🇵🇱 Polacco' },
+                { code: 'zh-CN', label: '🇨🇳 Cinese' },
+                { code: 'ja', label: '🇯🇵 Giapponese' },
+                { code: 'ar', label: '🇸🇦 Arabo' },
+              ].map((item) => (
+                <button
+                  key={item.code}
+                  type="button"
+                  onClick={() => handleSelectLanguage(item.code)}
+                  className={`px-2 py-0.5 rounded text-xs transition-colors ${
+                    selectedLangCode === item.code
+                      ? 'bg-amber-600 text-white font-bold'
+                      : 'bg-stone-100 hover:bg-stone-200 text-stone-700'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* PASSO 2: TESTO DEL DETTATO & MODALITÀ DI DIVISIONE (Nessuna parola saltata!) */}
+          {/* PASSO 2: TESTO DEL DETTATO */}
           <div className="space-y-3 pt-4 border-t border-stone-100">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="text-sm font-bold text-stone-900 flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-amber-600 text-white text-xs flex items-center justify-center font-bold">
                   2
                 </span>
-                <span>Inserisci il testo da dettare:</span>
+                <span>Testo da dettare:</span>
               </label>
 
-              {/* Selettore modalità di divisione */}
+              {/* Modalità di divisione */}
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-stone-400 mr-1 hidden sm:inline">Dividi per:</span>
                 <button
@@ -371,7 +429,7 @@ export default function App() {
                       ? 'bg-amber-600 text-white'
                       : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
                   }`}
-                  title="Ideale per liste di parole separate da virgola"
+                  title="Separa per virgole (ideale per liste di vocaboli)"
                 >
                   Virgole
                 </button>
@@ -414,40 +472,22 @@ export default function App() {
               </div>
             </div>
 
-            {detectedMismatch && (
-              <div className="flex items-center justify-between p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 animate-fadeIn">
-                <div className="flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>
-                    Hai inserito caratteri di <strong>{detectedMismatch.label}</strong> mentre la lingua è {currentLang.name}.
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedLangCode(detectedMismatch.code)}
-                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-xs transition-colors shrink-0 cursor-pointer"
-                >
-                  Imposta {detectedMismatch.label}
-                </button>
-              </div>
-            )}
-
             <textarea
               rows={4}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder="Scrivi le parole separate da virgola (es: palla, stella, cassetto) oppure digita una frase..."
+              placeholder="Scrivi le parole da dettare separate da virgola oppure frasi intere..."
               className="w-full rounded-xl border border-stone-300 p-3.5 text-base text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 leading-relaxed resize-y"
             />
 
-            {/* Sequenza parole individuate con ascolto rapido per garantire che NESSUNA parola venga saltata */}
+            {/* Sequenza parole individuate con bandiera lingua */}
             <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2">
               <div className="flex items-center justify-between text-xs text-stone-500">
                 <span className="font-semibold text-stone-700">
-                  Sequenza dettato ({parsedSegments.length} {parsedSegments.length === 1 ? 'elemento' : 'elementi'} in ordine):
+                  Sequenza dettato ({parsedSegments.length} parole in lingua {currentLang.flag} {currentLang.name}):
                 </span>
                 <span className="text-[11px] text-stone-400">
-                  Tutte le parole incluse • Clicca per ascoltare
+                  Clicca su 🔊 per ascoltare la pronuncia esatta
                 </span>
               </div>
 
@@ -463,10 +503,11 @@ export default function App() {
                           ? 'border-amber-600 bg-amber-100 text-amber-900 animate-pulse'
                           : 'border-stone-200 bg-white hover:bg-stone-100 text-stone-800'
                       }`}
-                      title="Clicca per testare la pronuncia"
+                      title={`Ascolta "${item.text}" in ${currentLang.name}`}
                     >
                       <span className="text-stone-400 text-[10px] font-mono">{idx + 1}.</span>
                       <span className="font-semibold">{item.text}</span>
+                      <span className="text-[10px]">{currentLang.flag}</span>
                       <Volume2 className="w-3 h-3 text-amber-600" />
                     </button>
                   ))}
@@ -479,7 +520,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* PASSO 3: VELOCITÀ DI LETTURA (LENTA IN QUESTO CASO) */}
+          {/* PASSO 3: VELOCITÀ DI LETTURA LENTA */}
           <div className="space-y-2.5 pt-4 border-t border-stone-100">
             <div className="flex items-center justify-between">
               <label className="text-sm font-bold text-stone-900 flex items-center gap-2">
@@ -504,7 +545,7 @@ export default function App() {
                 }`}
               >
                 <div className="text-sm font-bold">Molto lenta (0.60x)</div>
-                <div className="text-xs text-stone-500 font-normal">Per primi anni o DSA</div>
+                <div className="text-xs text-stone-500 font-normal">Per principianti o ortografia</div>
               </button>
 
               <button
@@ -535,12 +576,12 @@ export default function App() {
                 }`}
               >
                 <div className="text-sm font-bold">Normale (1.00x)</div>
-                <div className="text-xs text-stone-500 font-normal">Velocità naturale</div>
+                <div className="text-xs text-stone-500 font-normal">Velocità standard</div>
               </button>
             </div>
           </div>
 
-          {/* PASSO 4: RIPETIZIONI (2 O 3 VOLTE) E PAUSA SCRITTURA */}
+          {/* PASSO 4: RIPETIZIONI DELLA PAROLA (2 O 3 VOLTE) E PAUSA SCRITTURA */}
           <div className="space-y-3 pt-4 border-t border-stone-100">
             <label className="text-sm font-bold text-stone-900 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-amber-600 text-white text-xs flex items-center justify-center font-bold">
@@ -578,7 +619,7 @@ export default function App() {
                 }`}
               >
                 <div className="text-sm font-bold">Ripeti 3 volte</div>
-                <div className="text-xs text-stone-500 font-normal">Per bambini e ortografia</div>
+                <div className="text-xs text-stone-500 font-normal">Per memorizzazione e DSA</div>
               </button>
 
               <button
@@ -655,13 +696,13 @@ export default function App() {
               {isGenerating ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Creazione audio del dettato ({generationProgress}%)...</span>
+                  <span>Creazione audio ({generationProgress}%)...</span>
                 </>
               ) : (
                 <>
                   <FileAudio className="w-5 h-5" />
                   <span>
-                    Crea File Audio MP3 ({parsedSegments.length} parole • ~{formatDuration(estimatedSeconds)})
+                    Crea File Audio MP3 in {currentLang.flag} {currentLang.name} (~{formatDuration(estimatedSeconds)})
                   </span>
                 </>
               )}
